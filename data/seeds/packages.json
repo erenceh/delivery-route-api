@@ -1,0 +1,22 @@
+[
+  { "package_id": 1, "destination": "1700 W Washington St, Phoenix, AZ 85007" },
+  { "package_id": 2, "destination": "424 N Central Ave, Phoenix, AZ 85004" },
+  { "package_id": 3, "destination": "2605 N 15th Ave, Phoenix, AZ 85007" },
+  { "package_id": 4, "destination": "203 W Adams St, Phoenix, AZ 85003" },
+  { "package_id": 5, "destination": "1201 N Galvin Pkwy, Phoenix, AZ 85008" },
+  { "package_id": 6, "destination": "625 N Galvin Pkwy, Phoenix, AZ 85008" },
+  { "package_id": 7, "destination": "4725 E Mayo Blvd, Phoenix, AZ 85050" },
+  { "package_id": 8, "destination": "100 W Washington St, Phoenix, AZ 85003" },
+  { "package_id": 9, "destination": "200 W Jefferson St, Phoenix, AZ 85003" },
+  { "package_id": 10, "destination": "1221 N Central Ave, Phoenix, AZ 85004" },
+  { "package_id": 11, "destination": "2525 E Camelback Rd, Phoenix, AZ 85016" },
+  { "package_id": 12, "destination": "302 N 1st Ave, Phoenix, AZ 85003" },
+  { "package_id": 13, "destination": "1825 W Northern Ave, Phoenix, AZ 85021" },
+  { "package_id": 14, "destination": "400 E Van Buren St, Phoenix, AZ 85004" },
+  { "package_id": 15, "destination": "7858 N 16th St, Phoenix, AZ 85020" },
+  { "package_id": 16, "destination": "9445 N Metro Pkwy E, Phoenix, AZ 85051" },
+  { "package_id": 17, "destination": "1401 E Van Buren St, Phoenix, AZ 85006" },
+  { "package_id": 18, "destination": "455 N 3rd St, Phoenix, AZ 85004" },
+  { "package_id": 19, "destination": "115 E Aspen Ave, Flagstaff, AZ 86001" },
+  { "package_id": 20, "destination": "600 E Washington St, Phoenix, AZ 85004" }
+]
