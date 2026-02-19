@@ -127,7 +127,9 @@ HUB_ADDRESS="1901 W Madison St, Phoenix, AZ 85009"
 
 ### Run
 
-`go run ./cmd/server`
+```
+go run ./cmd/server
+```
 
 Then:
 
