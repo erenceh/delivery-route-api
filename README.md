@@ -1,6 +1,6 @@
 # delivery-route-api
 
-Backend delivery route planning service written in Go with OpenRouteService integration, SQLite persistence, and cold/warm cache performance optimization.
+Backend delivery route planning service written in Go with OpenRouteService integration, Postgres persistence, and cold/warm cache performance optimization.
 
 ## Overview
 
@@ -10,7 +10,7 @@ The service demonstrates:
 
 - Layered backend architecture (domain, ports, adapters)
 - Integration with an external routing API (OpenRouteService)
-- SQLite persistence
+- Postgres persistence
 - Cold vs warm cache optimization
 - Context-aware request handling
 - Retry/backoff for resilient API communication
@@ -18,12 +18,14 @@ The service demonstrates:
 
 This project began as a CLI-based routing program written in Python and was redesigned in Go as a layered HTTP backend service to explore production-style architecture, persistence, and external API integration.
 
+Note: This service depends on OpenRouteService. If ORS is temporarily unavailable, route planning requests will return HTTP 503.
+
 ## Features
 
 - Greedy nearest-neighbor route planning
 - Destination assignment across multiple trucks
 - OpenRouteService integration (geocoding + matrix API)
-- SQLite-backed:
+- Postgres-backed:
   - Package storage
   - Distance cache
   - Geocode cache
@@ -41,12 +43,12 @@ internal/api        -> HTTP handlers + DTOs + middleware
 internal/services   -> routing & assignment logic
 internal/domain     -> core business entities
 internal/ports      -> interfaces (DistanceProvider, Repository)
-internal/adapters   -> SQLite + ORS implementations
+internal/adapters   -> Postgres + ORS implementations
 ```
 
 The domain layer is independent of infrastructure concerns.
 
-External integrations (SQLite and ORS) are implemented as adapters behind interface boundaries.
+External integrations (Postgres and ORS) are implemented as adapters behind interface boundaries.
 
 ## Route Planning Strategy
 
@@ -65,7 +67,7 @@ This approach is intentionally simple and deterministic. Full logistics optimiza
 
 ## Performance & Caching
 
-The system maintains persistent SQLite caches for:
+The system maintains persistent Postgres caches for:
 
 - Geocode results (address -> coordinates)
 - Distance matrix results (origin -> destination)
@@ -77,7 +79,7 @@ The system maintains persistent SQLite caches for:
 
 ### Warm Run
 
-- All distances served from SQLite cache
+- All distances served from Postgres cache
 - Typical latency: ~2-5 milliseconds
 
 This demonstrates the impact of persistent caching on reducing repeated external API latency.
@@ -119,15 +121,19 @@ Request body (optional):
 
 ```
 ORS_API_KEY=YOUR_KEY_HERE
-DB_PATH="data/app.db"
-SEED_PATH="data/seeds/packages.json"
-PORT="8080"
-HUB_ADDRESS="1901 W Madison St, Phoenix, AZ 85009"
+DATABASE_URL=postgres://delivery:delivery@localhost:5432/delivery?sslmode=disable
+SEED_PATH=data/seeds/packages.json
+PORT=8080
+HUB_ADDRESS=1901 W Madison St, Phoenix, AZ 85009
 ```
 
 ### Run
 
+Postgres runs in Docker via docker-compose.
+
 ```
+docker compose up -d
+go run ./cmd/dbtool
 go run ./cmd/server
 ```
 
@@ -157,7 +163,6 @@ The server includes request logging middleware:
 - Parallelized geocoding with bounded concurrency
 - Rate-limit-aware ORS call coordination
 - Metrics integration (Prometheus/OpenTelemetry)
-- Docker containerization
 
 ## About the Architecture Choice
 
