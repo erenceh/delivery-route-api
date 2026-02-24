@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-// Initialize the SQLite database schema.
+// InitSchema initializes the database schema (Postgres).
 func InitSchema(db *sql.DB) error {
 	if db == nil {
 		return errors.New("init schema: DB is nil")
@@ -41,8 +41,8 @@ func InitSchema(db *sql.DB) error {
 	createGeocodeCacheQuery := `
 	CREATE TABLE IF NOT EXISTS geocode_cache (
         address TEXT PRIMARY KEY,
-        lon REAL NOT NULL,
-        lat REAL NOT NULL
+        lon DOUBLE PRECISION NOT NULL,
+        lat DOUBLE PRECISION NOT NULL
     );
 	`
 
@@ -106,14 +106,13 @@ func SeedFromJSON(db *sql.DB, jsonPath string) error {
 	if err != nil {
 		return fmt.Errorf("seed packages: begin tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	query := `
-	INSERT OR REPLACE INTO packages (
-		package_id,
-		destination
-	)
-	VALUES (?, ?);
+	INSERT INTO packages (package_id, destination)
+	VALUES ($1, $2)
+	ON CONFLICT (package_id) DO UPDATE
+	SET destination = EXCLUDED.destination;
 	`
 	stmt, err := tx.Prepare(query)
 	if err != nil {

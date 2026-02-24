@@ -76,12 +76,6 @@ func (h *PlanHandler) Plan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.Repo == nil {
-		log.Printf("PlanHandler Repo must not be nil")
-		writeError(w, r, http.StatusInternalServerError, "internal server error")
-		return
-	}
-
 	pkgs, err := h.Repo.ListPackages()
 	if err != nil {
 		log.Printf("list packages failed: %v", err)
@@ -98,16 +92,10 @@ func (h *PlanHandler) Plan(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	if h.Provider == nil {
-		log.Printf("PlanHandler Provider must not be nil")
-		writeError(w, r, http.StatusInternalServerError, "internal server error")
-		return
-	}
-
 	// Assign packages to trucks before computing individual routes.
 	if err := services.AssignPackagesByDistance(r.Context(), pkgs, trucks, hub, h.Provider); err != nil {
 		log.Printf("failed to assign packages: %v", err)
-		writeError(w, r, http.StatusInternalServerError, "internal server error")
+		writeError(w, r, http.StatusServiceUnavailable, "routing provider unavailable (OpenRouteService)")
 		return
 	}
 
@@ -117,7 +105,7 @@ func (h *PlanHandler) Plan(w http.ResponseWriter, r *http.Request) {
 		plan, err := services.PlanTruckRoute(r.Context(), t, depart, h.Provider, req.ReturnToStart)
 		if err != nil {
 			log.Printf("failed to plan truck route: %v", err)
-			writeError(w, r, http.StatusInternalServerError, "internal server error")
+			writeError(w, r, http.StatusServiceUnavailable, "routing provider unavailable (OpenRouteService)")
 			return
 		}
 

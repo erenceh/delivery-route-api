@@ -27,14 +27,14 @@ type ORSDistanceProvider struct {
 	apiKey        string
 	baseURL       string
 	profile       string
-	distanceCache *cache.SqliteDistanceCache
-	geocodeCache  *cache.SqliteGeocodeCache
+	distanceCache *cache.SQLDistanceCache
+	geocodeCache  *cache.SQLGeocodeCache
 }
 
 func NewORSDistanceProvider(
 	apiKey string,
-	distanceCache *cache.SqliteDistanceCache,
-	geocodeCache *cache.SqliteGeocodeCache,
+	distanceCache *cache.SQLDistanceCache,
+	geocodeCache *cache.SQLGeocodeCache,
 ) (*ORSDistanceProvider, error) {
 	if apiKey == "" {
 		return nil, errors.New("ORS api key is empty")
@@ -143,7 +143,7 @@ func (o *ORSDistanceProvider) GetDistances(
 	// Check persistent distance cache before issuing external API calls.
 	if o.distanceCache != nil {
 		var err error
-		destinationHits, err = o.distanceCache.GetMany(normOrigin, destList)
+		destinationHits, err = o.distanceCache.GetMany(ctx, normOrigin, destList)
 		if err != nil {
 			return nil, fmt.Errorf("ORS get distance cache: %w", err)
 		}
@@ -170,7 +170,7 @@ func (o *ORSDistanceProvider) GetDistances(
 	// Resolve coordinates via cache before calling ORS geocoding.
 	if o.geocodeCache != nil {
 		var err error
-		geocodeHits, err = o.geocodeCache.GetMany(needed)
+		geocodeHits, err = o.geocodeCache.GetMany(ctx, needed)
 		if err != nil {
 			return nil, fmt.Errorf("ORS get geocode cache: %w", err)
 		}
@@ -196,7 +196,7 @@ func (o *ORSDistanceProvider) GetDistances(
 	}
 
 	if o.geocodeCache != nil && len(fresh) > 0 {
-		if err := o.geocodeCache.PutMany(fresh); err != nil {
+		if err := o.geocodeCache.PutMany(ctx, fresh); err != nil {
 			log.Printf("geocode cache write failed: %v", err)
 		}
 	}
@@ -255,7 +255,7 @@ func (o *ORSDistanceProvider) GetDistances(
 	}
 
 	if o.distanceCache != nil {
-		if err := o.distanceCache.PutMany(normOrigin, fetched); err != nil {
+		if err := o.distanceCache.PutMany(ctx, normOrigin, fetched); err != nil {
 			log.Printf("distance cache write failed: %v", err)
 		}
 	}

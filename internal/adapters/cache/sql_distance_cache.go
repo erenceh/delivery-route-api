@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"context"
 	"database/sql"
 	"delivery-route-service/internal/ports"
 	"errors"
@@ -8,19 +9,18 @@ import (
 	"strings"
 )
 
-// SQLite backed cache for origin->destination distance results.
-// Keys are expected to be consistent (e.g., already normalized)
-// by the caller.
-type SqliteDistanceCache struct {
+// SQLDistanceCache is a SQL-backed cache for origin->destination distance results.
+type SQLDistanceCache struct {
 	DB *sql.DB
 }
 
-func NewSqliteDistanceCache(db *sql.DB) *SqliteDistanceCache {
-	return &SqliteDistanceCache{DB: db}
+func NewSQLDistanceCache(db *sql.DB) *SQLDistanceCache {
+	return &SQLDistanceCache{DB: db}
 }
 
 // Fetch cached distances for one origin and multiple destinations.
-func (s *SqliteDistanceCache) GetMany(
+func (s *SQLDistanceCache) GetMany(
+	ctx context.Context,
 	origin string,
 	destinations []string,
 ) (map[string]ports.DistanceResult, error) {
@@ -38,7 +38,6 @@ func (s *SqliteDistanceCache) GetMany(
 
 	seen := map[string]struct{}{}
 	uniq := make([]string, 0, len(destinations))
-	ph := make([]string, 0, len(destinations))
 	for _, d := range destinations {
 		d = strings.TrimSpace(d)
 		if d == "" {
@@ -50,33 +49,20 @@ func (s *SqliteDistanceCache) GetMany(
 		}
 		seen[d] = struct{}{}
 		uniq = append(uniq, d)
-		ph = append(ph, "?")
 	}
 
 	if len(uniq) == 0 {
 		return map[string]ports.DistanceResult{}, nil
 	}
 
-	placeholders := strings.Join(ph, ",")
-	args := make([]any, 0, 1+len(uniq))
-	args = append(args, origin)
-	for _, d := range uniq {
-		args = append(args, d)
-	}
-
-	// SQLite does not support binding slices directly in an IN (...) clause.
-	// Only the placeholder structure is interpolated; all values remain parameterized.
-	q := fmt.Sprintf(`
-	SELECT 
-        destination,
-        distance_meters,
-        duration_seconds
+	q := `
+	SELECT destination, distance_meters, duration_seconds
     FROM distance_cache
-    WHERE origin = ? 
-        AND destination IN (%s);
-	`, placeholders)
+    WHERE origin = $1 
+        AND destination = ANY($2::text[]);
+	`
 
-	rows, err := s.DB.Query(q, args...)
+	rows, err := s.DB.QueryContext(ctx, q, origin, uniq)
 	if err != nil {
 		return nil, fmt.Errorf("get distance cache: query distance_cache table: %w", err)
 	}
@@ -102,7 +88,11 @@ func (s *SqliteDistanceCache) GetMany(
 }
 
 // Store many cached distance results for a single origin.
-func (s *SqliteDistanceCache) PutMany(origin string, results map[string]ports.DistanceResult) error {
+func (s *SQLDistanceCache) PutMany(
+	ctx context.Context,
+	origin string,
+	results map[string]ports.DistanceResult,
+) error {
 	if s.DB == nil {
 		return errors.New("distance cache: db is nil")
 	}
@@ -115,20 +105,18 @@ func (s *SqliteDistanceCache) PutMany(origin string, results map[string]ports.Di
 		return nil
 	}
 
-	tx, err := s.DB.Begin()
+	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("insert distance cache: db begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	stmt, err := tx.Prepare(`
-	INSERT OR REPLACE INTO distance_cache (
-        origin,
-        destination,
-        distance_meters,
-        duration_seconds
-    )
-    VALUES (?, ?, ?, ?)
+	stmt, err := tx.PrepareContext(ctx, `
+	INSERT INTO distance_cache (origin, destination, distance_meters, duration_seconds)
+    VALUES ($1, $2, $3, $4)
+	ON CONFLICT (origin, destination) DO UPDATE
+	SET distance_meters = EXCLUDED.distance_meters,
+		duration_seconds = EXCLUDED.duration_seconds;
 	`)
 	if err != nil {
 		return fmt.Errorf("insert distance cache: db prepare: %w", err)
@@ -140,7 +128,7 @@ func (s *SqliteDistanceCache) PutMany(origin string, results map[string]ports.Di
 			return fmt.Errorf("insert distance cache: empty destination key")
 		}
 
-		if _, err := stmt.Exec(origin, dest, r.DistanceMeters, r.DurationSeconds); err != nil {
+		if _, err := stmt.ExecContext(ctx, origin, dest, r.DistanceMeters, r.DurationSeconds); err != nil {
 			return fmt.Errorf("insert distance cache dest=%q: %w", dest, err)
 		}
 	}

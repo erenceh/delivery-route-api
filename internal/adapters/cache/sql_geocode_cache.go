@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"context"
 	"database/sql"
 	"delivery-route-service/internal/domain"
 	"errors"
@@ -8,19 +9,17 @@ import (
 	"strings"
 )
 
-// SQLite backed cache mapping address strings to geographic coordinates.
-// Address keys are expected to be consistent (e.g., normalized)
-// by the caller.
-type SqliteGeocodeCache struct {
+// SQLGeocodeCache is a SQL-backed cache mapping addresses to coordinates.
+type SQLGeocodeCache struct {
 	DB *sql.DB
 }
 
-func NewSqliteGeocodeCache(db *sql.DB) *SqliteGeocodeCache {
-	return &SqliteGeocodeCache{DB: db}
+func NewSQLGeocodeCache(db *sql.DB) *SQLGeocodeCache {
+	return &SQLGeocodeCache{DB: db}
 }
 
 // Fetch cached coordinates for the given addresses.
-func (s *SqliteGeocodeCache) GetMany(addresses []string) (map[string]domain.Coordinates, error) {
+func (s *SQLGeocodeCache) GetMany(ctx context.Context, addresses []string) (map[string]domain.Coordinates, error) {
 	if s.DB == nil {
 		return nil, errors.New("geocode cache: db is nil")
 	}
@@ -31,7 +30,6 @@ func (s *SqliteGeocodeCache) GetMany(addresses []string) (map[string]domain.Coor
 
 	seen := map[string]struct{}{}
 	uniq := make([]string, 0, len(addresses))
-	ph := make([]string, 0, len(addresses))
 	for _, a := range addresses {
 		a = strings.TrimSpace(a)
 		if a == "" {
@@ -43,31 +41,19 @@ func (s *SqliteGeocodeCache) GetMany(addresses []string) (map[string]domain.Coor
 		}
 		seen[a] = struct{}{}
 		uniq = append(uniq, a)
-		ph = append(ph, "?")
 	}
 
 	if len(uniq) == 0 {
 		return map[string]domain.Coordinates{}, nil
 	}
 
-	placeholders := strings.Join(ph, ",")
-	args := make([]any, 0, len(uniq))
-	for _, a := range uniq {
-		args = append(args, a)
-	}
-
-	// SQLite does not support binding slices directly in an IN (...) clause.
-	// Only the placeholder structure is interpolated; all values remain parameterized.
-	q := fmt.Sprintf(`
-	SELECT 
-        address,
-        lon,
-        lat
+	q := `
+	SELECT address, lon, lat
     FROM geocode_cache
-    WHERE address IN (%s);
-	`, placeholders)
+    WHERE address = ANY($1::text[]);
+	`
 
-	rows, err := s.DB.Query(q, args...)
+	rows, err := s.DB.QueryContext(ctx, q, uniq)
 	if err != nil {
 		return nil, fmt.Errorf("get geocode cache: query geocode_cache table: %w", err)
 	}
@@ -90,7 +76,7 @@ func (s *SqliteGeocodeCache) GetMany(addresses []string) (map[string]domain.Coor
 }
 
 // Store address -> coordinate mappings in the cache.
-func (s *SqliteGeocodeCache) PutMany(results map[string]domain.Coordinates) error {
+func (s *SQLGeocodeCache) PutMany(ctx context.Context, results map[string]domain.Coordinates) error {
 	if s.DB == nil {
 		return errors.New("geocode cache: db is nil")
 	}
@@ -99,19 +85,18 @@ func (s *SqliteGeocodeCache) PutMany(results map[string]domain.Coordinates) erro
 		return nil
 	}
 
-	tx, err := s.DB.Begin()
+	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("insert geocode cache: db begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	stmt, err := tx.Prepare(`
-	INSERT OR REPLACE INTO geocode_cache (
-        address,
-        lon,
-        lat
-    )
-    VALUES (?, ?, ?);
+	stmt, err := tx.PrepareContext(ctx, `
+	INSERT INTO geocode_cache (address, lon, lat)
+    VALUES ($1, $2, $3)
+	ON CONFLICT (address) DO UPDATE
+	SET lon = EXCLUDED.lon,
+		lat = EXCLUDED.lat;
 	`)
 	if err != nil {
 		return fmt.Errorf("insert geocode cache: db prepare: %w", err)
@@ -123,7 +108,7 @@ func (s *SqliteGeocodeCache) PutMany(results map[string]domain.Coordinates) erro
 			return fmt.Errorf("insert geocode cache: empty address key")
 		}
 
-		if _, err := stmt.Exec(addr, c.Lon, c.Lat); err != nil {
+		if _, err := stmt.ExecContext(ctx, addr, c.Lon, c.Lat); err != nil {
 			return fmt.Errorf("insert geocode cache coord=%q: %w", addr, err)
 		}
 	}

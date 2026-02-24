@@ -8,14 +8,14 @@ import (
 )
 
 // SQLite-backed implementation of the PackageRepository port.
-type SqlitePackageRepository struct{ DB *sql.DB }
+type SQLPackageRepository struct{ DB *sql.DB }
 
-func NewSqlitePackageRepository(db *sql.DB) *SqlitePackageRepository {
-	return &SqlitePackageRepository{DB: db}
+func NewSQLPackageRepository(db *sql.DB) *SQLPackageRepository {
+	return &SQLPackageRepository{DB: db}
 }
 
 // Return all packages stored in the database.
-func (s *SqlitePackageRepository) ListPackages() ([]*domain.Package, error) {
+func (s *SQLPackageRepository) ListPackages() ([]*domain.Package, error) {
 	if s.DB == nil {
 		return nil, errors.New("sqlite package repository: DB is nil")
 	}
