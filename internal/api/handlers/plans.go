@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"delivery-route-service/internal/api/dto"
-	"delivery-route-service/internal/domain"
 	"delivery-route-service/internal/ports"
 	"delivery-route-service/internal/services"
 	"encoding/json"
@@ -52,12 +51,6 @@ func (h *PlanHandler) Plan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Apply defaults when request fields are omitted.
-	depart := time.Now()
-	if req.DepartAt != nil {
-		depart = *req.DepartAt
-	}
-
 	truckCount := req.TruckCount
 	if truckCount == 0 {
 		truckCount = 3
@@ -76,46 +69,24 @@ func (h *PlanHandler) Plan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	pkgs, err := h.Repo.ListPackages()
+	depart := time.Now()
+	if req.DepartAt != nil {
+		depart = *req.DepartAt
+	}
+
+	svcReq := services.PlanDeliveriesRequest{
+		Hub:           hub,
+		TruckCount:    truckCount,
+		TruckCapacity: truckCap,
+		DepartAt:      depart,
+		ReturnToStart: req.ReturnToStart,
+	}
+
+	plans, err := services.PlanDeliveries(r.Context(), svcReq, h.Repo, h.Provider)
 	if err != nil {
-		log.Printf("list packages failed: %v", err)
+		log.Printf("plan deliveries failed: %v", err)
 		writeError(w, r, http.StatusInternalServerError, "internal server error")
 		return
-	}
-
-	trucks := make([]*domain.Truck, 0, truckCount)
-	for i := 0; i < truckCount; i++ {
-		trucks = append(trucks, &domain.Truck{
-			TruckID:       i + 1,
-			Capacity:      truckCap,
-			StartLocation: hub,
-		})
-	}
-
-	// Assign packages to trucks before computing individual routes.
-	if err := services.AssignPackagesByDistance(r.Context(), pkgs, trucks, hub, h.Provider); err != nil {
-		log.Printf("failed to assign packages: %v", err)
-		writeError(w, r, http.StatusServiceUnavailable, "routing provider unavailable (OpenRouteService)")
-		return
-	}
-
-	// Compute and apply a route plan per truck
-	plans := make([]*domain.RoutePlan, 0, len(trucks))
-	for _, t := range trucks {
-		plan, err := services.PlanTruckRoute(r.Context(), t, depart, h.Provider, req.ReturnToStart)
-		if err != nil {
-			log.Printf("failed to plan truck route: %v", err)
-			writeError(w, r, http.StatusServiceUnavailable, "routing provider unavailable (OpenRouteService)")
-			return
-		}
-
-		if err := t.ApplyPlan(plan); err != nil {
-			log.Printf("failed to apply plan: %v", err)
-			writeError(w, r, http.StatusInternalServerError, "internal server error")
-			return
-		}
-
-		plans = append(plans, plan)
 	}
 
 	res := dto.ListPlanResponse{Plans: make([]dto.PlanResponse, 0, len(plans))}

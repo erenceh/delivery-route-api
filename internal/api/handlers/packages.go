@@ -19,7 +19,7 @@ func (h *PackageHandler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	pkgs, err := h.Repo.ListPackages()
+	pkgs, err := h.Repo.ListPackages(r.Context())
 	if err != nil {
 		log.Printf("list packages failed: %v", err)
 		writeError(w, r, http.StatusInternalServerError, "internal server error")

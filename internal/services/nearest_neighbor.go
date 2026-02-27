@@ -15,22 +15,23 @@ import (
 // The algorithm minimizes immediate travel duration at each step.
 // It does not attempt global route optimization (e.g., VRP solvers).
 // The design prioritizes determinism and simplicity over optimality.
-func PlanRoute(
+func NearestNeighborRoute(
 	ctx context.Context,
-	truckId int,
+	truck *domain.Truck,
 	departAt time.Time,
-	startLocation string,
-	packages []*domain.Package,
-	distanceProvider ports.DistanceProvider,
+	distances map[string]ports.DistanceResult,
 	returnToStart bool,
 ) (*domain.RoutePlan, error) {
+	startLocation := truck.StartLocation
+	packages := truck.Packages
+
 	if startLocation == "" {
 		return nil, errors.New("plan route: startLocation must be non-empty")
 	}
 
 	if len(packages) == 0 {
 		return &domain.RoutePlan{
-			TruckID:              truckId,
+			TruckID:              truck.TruckID,
 			DepartAt:             departAt,
 			Stops:                []domain.RouteStop{},
 			TotalDurationSeconds: 0,
@@ -61,30 +62,8 @@ func PlanRoute(
 			destinations = append(destinations, d)
 		}
 
-		var (
-			results map[string]ports.DistanceResult
-			err     error
-		)
-
-		// Prefer batched distance lookups when supported to reduce external API calls.
-		if provider, ok := distanceProvider.(ports.DistanceMatrixProvider); ok {
-			results, err = provider.GetDistances(ctx, currentLocation, destinations)
-			if err != nil {
-				return nil, fmt.Errorf("plan route: get distances matrix from %q: %w", currentLocation, err)
-			}
-		} else {
-			results = make(map[string]ports.DistanceResult, len(destinations))
-			for _, d := range destinations {
-				r, e := distanceProvider.GetDistance(ctx, currentLocation, d)
-				if e != nil {
-					return nil, fmt.Errorf("plan route: get distance: from %q to %q: %w", currentLocation, d, e)
-				}
-				results[d] = r
-			}
-		}
-
 		for _, d := range destinations {
-			if _, ok := results[d]; !ok {
+			if _, ok := distances[currentLocation+"|"+d]; !ok {
 				return nil, fmt.Errorf("plan route: missing distance result from %q to %q", currentLocation, d)
 			}
 		}
@@ -94,7 +73,7 @@ func PlanRoute(
 
 		// Select next stop by minimum travel duration (greedy step.)
 		for _, d := range destinations {
-			currentDuration := results[d].DurationSeconds
+			currentDuration := distances[currentLocation+"|"+d].DurationSeconds
 			// Tie-breaker ensures deterministic ordering when durations are equal.
 			if currentDuration < minDuration || (currentDuration == minDuration && (bestDestination == "" || d < bestDestination)) {
 				minDuration = currentDuration
@@ -105,7 +84,7 @@ func PlanRoute(
 		if bestDestination == "" {
 			return nil, errors.New("plan route: failed to select next destination")
 		}
-		bestResult := results[bestDestination]
+		bestResult := distances[currentLocation+"|"+bestDestination]
 
 		currentTime = currentTime.Add(time.Duration(bestResult.DurationSeconds) * time.Second)
 		totalDurationSeconds += bestResult.DurationSeconds
@@ -126,9 +105,12 @@ func PlanRoute(
 
 	// Optionally includes return leg to hub for total route metrics.
 	if returnToStart {
-		back, err := distanceProvider.GetDistance(ctx, currentLocation, startLocation)
-		if err != nil {
-			return nil, fmt.Errorf("plan route: get distance return leg from %q to %q: %w", currentLocation, startLocation, err)
+		back, ok := distances[currentLocation+"|"+startLocation]
+		if !ok {
+			return nil, fmt.Errorf(
+				"plan route: missing distance result for return leg from %q to %q",
+				currentLocation, startLocation,
+			)
 		}
 
 		currentTime = currentTime.Add(time.Duration(back.DurationSeconds) * time.Second)
@@ -137,34 +119,10 @@ func PlanRoute(
 	}
 
 	return &domain.RoutePlan{
-		TruckID:              truckId,
+		TruckID:              truck.TruckID,
 		DepartAt:             departAt,
 		Stops:                stops,
 		TotalDurationSeconds: totalDurationSeconds,
 		TotalDistanceMeters:  totalDistanceMeters,
 	}, nil
-}
-
-// Create a RoutePlan for the currently loaded packages.
-func PlanTruckRoute(
-	ctx context.Context,
-	truck *domain.Truck,
-	departAt time.Time,
-	distanceProvider ports.DistanceProvider,
-	returnToStart bool,
-) (*domain.RoutePlan, error) {
-	if truck == nil {
-		return nil, errors.New("plan truck route: truck must be non-nil")
-	}
-
-	if truck.StartLocation == "" {
-		return nil, fmt.Errorf("plan truck route: truck %d startLocation must be non-empty", truck.TruckID)
-	}
-
-	// Delegate to PlanRoute while preserving truck-level invariants.
-	plan, err := PlanRoute(ctx, truck.TruckID, departAt, truck.StartLocation, truck.Packages, distanceProvider, returnToStart)
-	if err != nil {
-		return nil, fmt.Errorf("plan truck route: for truck %d: %w", truck.TruckID, err)
-	}
-	return plan, nil
 }
