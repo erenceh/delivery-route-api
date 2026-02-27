@@ -29,6 +29,7 @@ Note: This service depends on OpenRouteService. If ORS is temporarily unavailabl
   - Package storage
   - Distance cache
   - Geocode cache
+- Concurrent pairwise distance fetching with bounded goroutine pool
 - Cold-start performance optimization
 - Retry and exponential backoff on external API calls
 - Request latency and byte-level logging middleware
@@ -75,7 +76,10 @@ The system maintains persistent Postgres caches for:
 ### Cold Run
 
 - Requires ORS geocode + matrix API calls
-- Typical latency (20 destinations): ~20-25 seconds
+- Typical latency (20 destinations): ~8 seconds
+- Geocoding and pairwise distance fetching are parallelized using bounded goroutine pools (semaphore size: 5) to balance throughput agains ORS rate limits
+
+Pairwise distances are pre-fetched concurrently before route planning, reducing cold-start latency from ~20s to ~8s
 
 ### Warm Run
 
@@ -160,7 +164,6 @@ The server includes request logging middleware:
 ## Future Improvements
 
 - Smarter geographic clustering for truck assignment
-- Parallelized geocoding with bounded concurrency
 - Rate-limit-aware ORS call coordination
 - Metrics integration (Prometheus/OpenTelemetry)
 
