@@ -3,6 +3,7 @@ package cache
 import (
 	"context"
 	"database/sql"
+	"delivery-route-service/internal/platform/obs"
 	"delivery-route-service/internal/ports"
 	"errors"
 	"fmt"
@@ -23,7 +24,9 @@ func (s *SQLDistanceCache) GetMany(
 	ctx context.Context,
 	origin string,
 	destinations []string,
-) (map[string]ports.DistanceResult, error) {
+) (_ map[string]ports.DistanceResult, err error) {
+	defer obs.Time(ctx, "distance.cache.GetMany")(&err)
+
 	if s.DB == nil {
 		return nil, errors.New("distance cache: db is nil")
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"delivery-route-service/internal/adapters/cache"
 	"delivery-route-service/internal/domain"
+	"delivery-route-service/internal/platform/obs"
 	"delivery-route-service/internal/ports"
 	"errors"
 	"fmt"
@@ -98,7 +99,9 @@ func (o *ORSDistanceProvider) GetDistances(
 	ctx context.Context,
 	origin string,
 	destinations []string,
-) (map[string]ports.DistanceResult, error) {
+) (_ map[string]ports.DistanceResult, err error) {
+	defer obs.Time(ctx, "ors.GetDistances")(&err)
+
 	if origin == "" {
 		return nil, errors.New("origin must be non-empty")
 	}

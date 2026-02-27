@@ -7,7 +7,7 @@ import (
 	"fmt"
 )
 
-// SQLite-backed implementation of the PackageRepository port.
+// Postgres implementation of the PackageRepository port.
 type SQLPackageRepository struct{ DB *sql.DB }
 
 func NewSQLPackageRepository(db *sql.DB) *SQLPackageRepository {

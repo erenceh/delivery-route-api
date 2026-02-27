@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"delivery-route-service/internal/domain"
+	"delivery-route-service/internal/platform/obs"
 	"delivery-route-service/internal/ports"
 	"encoding/json"
 	"errors"
@@ -31,7 +32,9 @@ func (o *ORSDistanceProvider) fetchMatrixRow(
 	originCoord domain.Coordinates,
 	destinations []string,
 	destinationCoords []domain.Coordinates,
-) (map[string]ports.DistanceResult, error) {
+) (_ map[string]ports.DistanceResult, err error) {
+	defer obs.Time(ctx, "ors.fetchMatrixRow")(&err)
+
 	if len(destinations) != len(destinationCoords) {
 		return nil, errors.New("destinations and destinationCoords are expected to have the same length")
 	}

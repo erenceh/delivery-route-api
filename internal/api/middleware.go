@@ -1,8 +1,11 @@
 package api
 
 import (
+	"context"
+	"delivery-route-service/internal/platform/obs"
 	"log"
 	"net/http"
+	"strconv"
 	"time"
 )
 
@@ -39,6 +42,13 @@ func loggingMiddleware(next http.Handler) http.Handler {
 			ResponseWriter: w,
 			status:         0,
 		}
+
+		reqID := strconv.FormatInt(time.Now().UnixNano(), 36)
+
+		ctx := context.WithValue(r.Context(), obs.RequestIDKey, reqID)
+		r = r.WithContext(ctx)
+
+		w.Header().Set("X-Request-Id", reqID)
 
 		next.ServeHTTP(sw, r)
 

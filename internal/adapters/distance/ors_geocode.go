@@ -3,6 +3,7 @@ package distance
 import (
 	"context"
 	"delivery-route-service/internal/domain"
+	"delivery-route-service/internal/platform/obs"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -21,11 +22,12 @@ type geocodeResponse struct {
 func (o *ORSDistanceProvider) geocodeMany(
 	ctx context.Context,
 	addresses []string,
-) (map[string]domain.Coordinates, error) {
+) (_ map[string]domain.Coordinates, err error) {
+	defer obs.Time(ctx, "ors.geocodeMany")(&err)
+
 	endpoint := o.baseURL + "/geocode/search"
 
 	seen := make(map[string]struct{}, len(addresses))
-
 	out := make(map[string]domain.Coordinates)
 	for _, a := range addresses {
 		if _, ok := seen[a]; ok {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"delivery-route-service/internal/domain"
+	"delivery-route-service/internal/platform/obs"
 	"errors"
 	"fmt"
 	"strings"
@@ -19,7 +20,12 @@ func NewSQLGeocodeCache(db *sql.DB) *SQLGeocodeCache {
 }
 
 // Fetch cached coordinates for the given addresses.
-func (s *SQLGeocodeCache) GetMany(ctx context.Context, addresses []string) (map[string]domain.Coordinates, error) {
+func (s *SQLGeocodeCache) GetMany(
+	ctx context.Context,
+	addresses []string,
+) (_ map[string]domain.Coordinates, err error) {
+	defer obs.Time(ctx, "geocode.cache.GetMany")(&err)
+
 	if s.DB == nil {
 		return nil, errors.New("geocode cache: db is nil")
 	}
