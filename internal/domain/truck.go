@@ -17,7 +17,7 @@ type Truck struct {
 func NewTruck(id int, capacity int, hub string) *Truck {
 	return &Truck{
 		TruckID:       id,
-		Capacity:      16,
+		Capacity:      capacity,
 		StartLocation: hub,
 	}
 }

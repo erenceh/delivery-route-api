@@ -30,6 +30,16 @@ func PlanDeliveries(
 	repo ports.PackageRepository,
 	provider ports.DistanceProvider,
 ) ([]*domain.RoutePlan, error) {
+	if req.Hub == "" {
+		return nil, fmt.Errorf("plan deliveries: hub address must not be empty")
+	}
+	if req.TruckCount <= 0 {
+		return nil, fmt.Errorf("plan deliveries: truck count must be positive, got %d", req.TruckCount)
+	}
+	if req.TruckCapacity <= 0 {
+		return nil, fmt.Errorf("plan deliveries: truck capacity must be positive, got %d", req.TruckCapacity)
+	}
+
 	pkgs, err := repo.ListPackages(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("plan deliveries: list package: %w", err)
@@ -130,7 +140,10 @@ func PlanDeliveries(
 				var e error
 				res, e = mp.GetDistances(ctx, orig, targets)
 				if e != nil {
-					resultsCh <- pairwiseResult{origin: orig, err: fmt.Errorf("plan deliveries: get pairwise distances from %q: %w", orig, e)}
+					resultsCh <- pairwiseResult{origin: orig, err: fmt.Errorf(
+						"plan deliveries: get pairwise distances from %q: %w",
+						orig, e,
+					)}
 					cancel()
 					return
 				}
@@ -139,7 +152,10 @@ func PlanDeliveries(
 				for _, t := range targets {
 					r, e := provider.GetDistance(ctx, orig, t)
 					if e != nil {
-						resultsCh <- pairwiseResult{origin: orig, err: fmt.Errorf("plan deliveries: get pairwise distance from %q to %q: %w", orig, t, e)}
+						resultsCh <- pairwiseResult{origin: orig, err: fmt.Errorf(
+							"plan deliveries: get pairwise distance from %q to %q: %w",
+							orig, t, e,
+						)}
 						cancel()
 						return
 					}
@@ -166,7 +182,10 @@ func PlanDeliveries(
 			if t != res.origin {
 				r, ok := res.results[t]
 				if !ok {
-					return nil, fmt.Errorf("plan deliveries: missing pairwise distance from %q to %q", res.origin, t)
+					return nil, fmt.Errorf(
+						"plan deliveries: missing pairwise distance from %q to %q",
+						res.origin, t,
+					)
 				}
 				pairwiseDist[res.origin+"|"+t] = r
 			}
@@ -183,8 +202,9 @@ func PlanDeliveries(
 		if err != nil {
 			return nil, fmt.Errorf("plan deliveries: plan nearest neighbor route: %w", err)
 		}
-
-		plans = append(plans, plan)
+		if len(plan.Stops) > 0 {
+			plans = append(plans, plan)
+		}
 	}
 
 	return plans, nil
