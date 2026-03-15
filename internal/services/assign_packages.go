@@ -59,6 +59,10 @@ func AssignPackagesByDistance(
 			end = nDests
 		}
 
+		// TODO: Change overflow behavior in AssignPackagesByDistance
+		// fill trucks to capacity and leave remaining packages in database
+		// rather than failing fast. Requires delivery status tracking.
+
 		// Load all packages for this destination band onto the truck.
 		// If capacity is exceeded, assignment fails fast rather than rebalancing.
 		for _, d := range destinations[start:end] {

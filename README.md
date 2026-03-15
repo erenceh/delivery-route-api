@@ -166,6 +166,7 @@ The server includes request logging middleware:
 - Smarter geographic clustering for truck assignment
 - Rate-limit-aware ORS call coordination
 - Metrics integration (Prometheus/OpenTelemetry)
+- Fill trucks to capacity when packages exceed total capacity rather than failing fast - requires packages status tracking (pending/assigned/delivered)
 
 ## About the Architecture Choice
 
