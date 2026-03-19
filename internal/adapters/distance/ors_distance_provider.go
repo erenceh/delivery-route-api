@@ -4,7 +4,6 @@ import (
 	"context"
 	"delivery-route-service/internal/adapters/cache"
 	"delivery-route-service/internal/domain"
-	"delivery-route-service/internal/platform/obs"
 	"delivery-route-service/internal/ports"
 	"errors"
 	"fmt"
@@ -53,198 +52,146 @@ func NewORSDistanceProvider(
 	return provider, nil
 }
 
-// normalize ensures consistent cache keys by collapsing whitespace.
-func (o *ORSDistanceProvider) normalize(s string) string {
-	return strings.Join(strings.Fields(s), " ")
-}
-
-// Delegate to batched path to reuse caching and matrix logic.
-func (o *ORSDistanceProvider) GetDistance(
-	ctx context.Context,
-	origin string,
-	destination string,
-) (ports.DistanceResult, error) {
-	if origin == "" || destination == "" {
-		return ports.DistanceResult{}, errors.New("get ORS distance: origin and destination must be non-empty")
-	}
-
-	normOrigin := o.normalize(origin)
-	if normOrigin == "" {
-		return ports.DistanceResult{}, errors.New("origin must be non-empty")
-	}
-
-	normDestination := o.normalize(destination)
-	if normDestination == "" {
-		return ports.DistanceResult{}, errors.New("destination must be non-empty")
-	}
-
-	results, err := o.GetDistances(ctx, normOrigin, []string{normDestination})
-	if err != nil {
-		return ports.DistanceResult{}, fmt.Errorf(
-			"get distances %q -> %q: %w",
-			normOrigin, normDestination, err,
-		)
-	}
-
-	result, ok := results[normDestination]
-	if !ok {
-		return ports.DistanceResult{}, fmt.Errorf("no distance result for %q -> %q", origin, destination)
-	}
-
-	return result, nil
-}
-
-// Compute distances from a single origin to many destinations.
-func (o *ORSDistanceProvider) GetDistances(
-	ctx context.Context,
+// normalizeAndDedupe collapses whitespace in origin and destinations,
+// removes duplicates, and filters out destinations equal to the origin.
+func (o *ORSDistanceProvider) normalizeAndDedupe(
 	origin string,
 	destinations []string,
-) (_ map[string]ports.DistanceResult, err error) {
-	defer obs.Time(ctx, "ors.GetDistances")(&err)
-
+) (string, []string, error) {
 	if origin == "" {
-		return nil, errors.New("origin must be non-empty")
+		return "", nil, errors.New("get ORS distance: origin must be non-empty")
 	}
 
 	if len(destinations) == 0 {
-		return map[string]ports.DistanceResult{}, nil
+		return "", nil, errors.New("get ORS distance: destinations must be non-empty")
 	}
 
-	normOrigin := o.normalize(origin)
-	if normOrigin == "" {
-		return nil, errors.New("origin must be non-empty")
-	}
-
+	normOrigin := strings.Join(strings.Fields(origin), " ")
 	normDestinations := make([]string, 0, len(destinations))
 	for _, d := range destinations {
-		nd := o.normalize(d)
-		if nd == "" {
-			continue
-		}
-		normDestinations = append(normDestinations, nd)
+		normDestinations = append(normDestinations, strings.Join(strings.Fields(d), " "))
 	}
 
 	seen := make(map[string]struct{}, len(normDestinations))
-	destList := make([]string, 0, len(normDestinations))
-	for _, d := range normDestinations {
-		if d == normOrigin {
+	normDestList := make([]string, 0, len(normDestinations))
+	for _, nd := range normDestinations {
+		if nd == normOrigin {
 			continue
 		}
-		if _, ok := seen[d]; ok {
+		if _, ok := seen[nd]; ok {
 			continue
 		}
 
-		seen[d] = struct{}{}
-		destList = append(destList, d)
+		seen[nd] = struct{}{}
+		normDestList = append(normDestList, nd)
 	}
 
-	if len(destList) == 0 {
-		return map[string]ports.DistanceResult{}, nil
-	}
+	return normOrigin, normDestList, nil
+}
 
+// resolveDistances checks the distance cache and returns hits and misses.
+func (o *ORSDistanceProvider) resolveDistances(
+	ctx context.Context,
+	origin string,
+	destinations []string,
+) (hits map[string]ports.DistanceResult, misses []string, err error) {
 	destinationHits := make(map[string]ports.DistanceResult)
 	// Check persistent distance cache before issuing external API calls.
 	if o.distanceCache != nil {
-		var err error
-		destinationHits, err = o.distanceCache.GetMany(ctx, normOrigin, destList)
+		destinationHits, err = o.distanceCache.GetMany(ctx, origin, destinations)
 		if err != nil {
-			return nil, fmt.Errorf("ORS get distance cache: %w", err)
+			return nil, nil, fmt.Errorf("ORS get distance cache: %w", err)
 		}
 	}
 
-	destinationMisses := make([]string, 0, len(destList))
-	for _, d := range destList {
+	destinationMisses := make([]string, 0, len(destinations))
+	for _, d := range destinations {
 		if _, ok := destinationHits[d]; !ok {
 			destinationMisses = append(destinationMisses, d)
 		}
 	}
 
-	if len(destinationMisses) == 0 {
-		return destinationHits, nil
-	}
+	return destinationHits, destinationMisses, nil
+}
 
-	needed := make([]string, 0, 1+len(destinationMisses))
-	needed = append(needed, normOrigin)
-	for _, d := range destinationMisses {
-		needed = append(needed, d)
-	}
-
+// resolveCoordinates resolves addresses to coordinates via cache and ORS geocoding.
+// Fresh results are written back to the geocode cache.
+func (o *ORSDistanceProvider) resolveCoordinates(
+	ctx context.Context,
+	addresses []string,
+) (coords map[string]domain.Coordinates, err error) {
 	geocodeHits := make(map[string]domain.Coordinates)
 	// Resolve coordinates via cache before calling ORS geocoding.
 	if o.geocodeCache != nil {
-		var err error
-		geocodeHits, err = o.geocodeCache.GetMany(ctx, needed)
+		geocodeHits, err = o.geocodeCache.GetMany(ctx, addresses)
 		if err != nil {
 			return nil, fmt.Errorf("ORS get geocode cache: %w", err)
 		}
 	}
 
-	geocodeMisses := make([]string, 0, len(needed))
-	for _, a := range needed {
+	geocodeMisses := make([]string, 0, len(addresses))
+	for _, a := range addresses {
 		if _, ok := geocodeHits[a]; !ok {
 			geocodeMisses = append(geocodeMisses, a)
 		}
 	}
 
-	fresh := make(map[string]domain.Coordinates)
+	coordResults := make(map[string]domain.Coordinates)
 	if len(geocodeMisses) > 0 {
-		var err error
-		fresh, err = o.geocodeMany(ctx, geocodeMisses)
+		coordResults, err = o.geocodeMany(ctx, geocodeMisses)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"retrieving coordinates: %w",
-				err,
-			)
+			return nil, fmt.Errorf("retrieving coordinates: %w", err)
 		}
 	}
 
-	if o.geocodeCache != nil && len(fresh) > 0 {
-		if err := o.geocodeCache.PutMany(ctx, fresh); err != nil {
+	if o.geocodeCache != nil && len(coordResults) > 0 {
+		if err := o.geocodeCache.PutMany(ctx, coordResults); err != nil {
 			log.Printf("geocode cache write failed: %v", err)
 		}
 	}
 
-	coords := make(map[string]domain.Coordinates, len(geocodeHits)+len(fresh))
+	coords = make(map[string]domain.Coordinates, len(geocodeHits)+len(coordResults))
 	for k, v := range geocodeHits {
 		coords[k] = v
 	}
-	for k, v := range fresh {
+	for k, v := range coordResults {
 		coords[k] = v
 	}
 
-	originCoord, ok := coords[normOrigin]
+	return coords, nil
+}
+
+// fetchAndCacheDistance fetches distances from ORS for cache misses,
+// validates results, and writes them to the distance cache.
+func (o *ORSDistanceProvider) fetchAndCacheDistances(
+	ctx context.Context,
+	origin string,
+	misses []string,
+	coords map[string]domain.Coordinates,
+) (distances map[string]ports.DistanceResult, err error) {
+	originCoord, ok := coords[origin]
 	if !ok {
-		return nil, fmt.Errorf(
-			"missing coordinate for origin %q",
-			normOrigin,
-		)
+		return nil, fmt.Errorf("missing coordinate for origin %q", origin)
 	}
 
-	destinationCoords := make([]domain.Coordinates, 0, len(destinationMisses))
-	for _, d := range destinationMisses {
+	destinationCoords := make([]domain.Coordinates, 0, len(misses))
+	for _, d := range misses {
 		coord, ok := coords[d]
 		if !ok {
-			return nil, fmt.Errorf(
-				"missing coordinate for destination %q",
-				d,
-			)
+			return nil, fmt.Errorf("missing coordinate for destination %q", d)
 		}
 		destinationCoords = append(destinationCoords, coord)
 	}
 
 	// Fetch a single origin->many matrix row for all cache misses.
-	fetched, err := o.fetchMatrixRow(ctx, originCoord, destinationMisses, destinationCoords)
+	distances, err = o.fetchMatrixRow(ctx, originCoord, misses, destinationCoords)
 	if err != nil {
-		return nil, fmt.Errorf(
-			"fetching matrix row: %w",
-			err,
-		)
+		return nil, fmt.Errorf("fetching matrix row: %w", err)
 	}
 
-	missing := make([]string, 0)
-
-	for _, d := range destinationMisses {
-		if _, ok := fetched[d]; !ok {
+	var missing []string
+	for _, d := range misses {
+		if _, ok := distances[d]; !ok {
 			missing = append(missing, d)
 		}
 	}
@@ -258,13 +205,76 @@ func (o *ORSDistanceProvider) GetDistances(
 	}
 
 	if o.distanceCache != nil {
-		if err := o.distanceCache.PutMany(ctx, normOrigin, fetched); err != nil {
+		if err := o.distanceCache.PutMany(ctx, origin, distances); err != nil {
 			log.Printf("distance cache write failed: %v", err)
 		}
 	}
 
-	out := make(map[string]ports.DistanceResult, len(destinationHits)+len(fetched))
-	for k, v := range destinationHits {
+	return distances, nil
+}
+
+// Delegate to batched path to reuse caching and matrix logic.
+func (o *ORSDistanceProvider) GetDistance(
+	ctx context.Context,
+	origin string,
+	destination string,
+) (ports.DistanceResult, error) {
+	origin, destinations, err := o.normalizeAndDedupe(origin, []string{destination})
+	if err != nil {
+		return ports.DistanceResult{}, err
+	}
+
+	results, err := o.GetDistances(ctx, origin, destinations)
+	if err != nil {
+		return ports.DistanceResult{}, fmt.Errorf(
+			"get distances %q -> %q: %w",
+			origin, destination, err,
+		)
+	}
+
+	result, ok := results[destinations[0]]
+	if !ok {
+		return ports.DistanceResult{}, fmt.Errorf("no distance result for %q -> %q", origin, destination)
+	}
+
+	return result, nil
+}
+
+func (o *ORSDistanceProvider) GetDistances(
+	ctx context.Context,
+	origin string,
+	destinations []string,
+) (map[string]ports.DistanceResult, error) {
+	if len(destinations) == 0 {
+		return map[string]ports.DistanceResult{}, nil
+	}
+
+	origin, destList, err := o.normalizeAndDedupe(origin, destinations)
+	if err != nil {
+		return nil, err
+	}
+
+	hits, misses, err := o.resolveDistances(ctx, origin, destList)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(misses) == 0 {
+		return hits, nil
+	}
+
+	coords, err := o.resolveCoordinates(ctx, append([]string{origin}, misses...))
+	if err != nil {
+		return nil, err
+	}
+
+	fetched, err := o.fetchAndCacheDistances(ctx, origin, misses, coords)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make(map[string]ports.DistanceResult, len(hits)+len(fetched))
+	for k, v := range hits {
 		out[k] = v
 	}
 	for k, v := range fetched {

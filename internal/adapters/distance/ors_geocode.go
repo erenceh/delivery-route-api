@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 )
 
@@ -58,7 +59,7 @@ func (o *ORSDistanceProvider) geocodeMany(
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			norm := o.normalize(addr)
+			norm := strings.Join(strings.Fields(addr), " ")
 
 			resp, e := o.doWithRetry(ctx, func() (*http.Request, error) {
 				req, err := o.newRequest(ctx, http.MethodGet, endpoint, nil)
@@ -124,7 +125,7 @@ func (o *ORSDistanceProvider) geocodeMany(
 			}
 			continue
 		}
-		out[o.normalize(res.address)] = res.result
+		out[strings.Join(strings.Fields(res.address), " ")] = res.result
 	}
 	if geocodeErr != nil {
 		return nil, geocodeErr
