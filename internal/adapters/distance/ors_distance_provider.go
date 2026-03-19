@@ -4,6 +4,7 @@ import (
 	"context"
 	"delivery-route-service/internal/adapters/cache"
 	"delivery-route-service/internal/domain"
+	"delivery-route-service/internal/platform/obs"
 	"delivery-route-service/internal/ports"
 	"errors"
 	"fmt"
@@ -244,7 +245,9 @@ func (o *ORSDistanceProvider) GetDistances(
 	ctx context.Context,
 	origin string,
 	destinations []string,
-) (map[string]ports.DistanceResult, error) {
+) (out map[string]ports.DistanceResult, err error) {
+	defer obs.Time(ctx, "ors.GetDistances")(&err)
+
 	if len(destinations) == 0 {
 		return map[string]ports.DistanceResult{}, nil
 	}
@@ -273,7 +276,7 @@ func (o *ORSDistanceProvider) GetDistances(
 		return nil, err
 	}
 
-	out := make(map[string]ports.DistanceResult, len(hits)+len(fetched))
+	out = make(map[string]ports.DistanceResult, len(hits)+len(fetched))
 	for k, v := range hits {
 		out[k] = v
 	}
