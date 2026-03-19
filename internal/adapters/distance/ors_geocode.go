@@ -93,7 +93,7 @@ func (o *ORSDistanceProvider) geocodeMany(
 	resultsCh := make(chan geocodeResult, len(addrList))
 	var wg sync.WaitGroup
 
-	// Fan-out: spawn one goroutine per address, bounded by jobsCh semaphore.
+	// Fan-out: spawn one goroutine per address, bounded by sem semaphore.
 	for _, a := range addrList {
 		wg.Add(1)
 		go func(addr string) {
