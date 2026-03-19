@@ -53,18 +53,31 @@ func (o *ORSDistanceProvider) do(req *http.Request) (*http.Response, error) {
 	return resp, nil
 }
 
+func (o *ORSDistanceProvider) isRetryable(err error) bool {
+	var he *httpStatusError
+	if errors.As(err, &he) {
+		switch he.Code {
+		case 429, 500, 502, 503, 504:
+			return true
+		}
+	}
+
+	var netErr net.Error
+	return errors.As(err, &netErr)
+}
+
 // doWithRetry retires transient failures (network errors, 5xx responses)
 // using exponential backoff while respecting context cancellation.
 func (o *ORSDistanceProvider) doWithRetry(
 	ctx context.Context,
 	makeReq func() (*http.Request, error),
 ) (*http.Response, error) {
-	const maxAttepts = 4
+	const maxAttempts = 4
 	backoff := 200 * time.Millisecond
 
 	var lastErr error
 
-	for attempt := 1; attempt <= maxAttepts; attempt++ {
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
@@ -80,21 +93,7 @@ func (o *ORSDistanceProvider) doWithRetry(
 		}
 		lastErr = err
 
-		retry := false
-		var he *httpStatusError
-		if errors.As(err, &he) {
-			switch he.Code {
-			case 429, 500, 502, 503, 504:
-				retry = true
-			}
-		}
-
-		var netErr net.Error
-		if !retry && errors.As(err, &netErr) {
-			retry = true
-		}
-
-		if !retry || attempt == maxAttepts {
+		if !o.isRetryable(err) || attempt == maxAttempts {
 			return nil, lastErr
 		}
 
