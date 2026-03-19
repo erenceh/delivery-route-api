@@ -68,23 +68,20 @@ func (o *ORSDistanceProvider) normalizeAndDedupe(
 	}
 
 	normOrigin := strings.Join(strings.Fields(origin), " ")
-	normDestinations := make([]string, 0, len(destinations))
+
+	seen := make(map[string]struct{}, len(destinations))
+	normDestList := make([]string, 0, len(destinations))
 	for _, d := range destinations {
-		normDestinations = append(normDestinations, strings.Join(strings.Fields(d), " "))
-	}
-
-	seen := make(map[string]struct{}, len(normDestinations))
-	normDestList := make([]string, 0, len(normDestinations))
-	for _, nd := range normDestinations {
-		if nd == normOrigin {
+		d = strings.Join(strings.Fields(d), " ")
+		if d == normOrigin {
 			continue
 		}
-		if _, ok := seen[nd]; ok {
+		if _, ok := seen[d]; ok {
 			continue
 		}
 
-		seen[nd] = struct{}{}
-		normDestList = append(normDestList, nd)
+		seen[d] = struct{}{}
+		normDestList = append(normDestList, d)
 	}
 
 	return normOrigin, normDestList, nil
