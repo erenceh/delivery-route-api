@@ -24,32 +24,33 @@ type PlanDeliveriesRequest struct {
 	ReturnToStart bool
 }
 
-func PlanDeliveries(
-	ctx context.Context,
-	req PlanDeliveriesRequest,
-	repo ports.PackageRepository,
-	provider ports.DistanceProvider,
-) ([]*domain.RoutePlan, error) {
+func validateRequest(req PlanDeliveriesRequest) error {
 	if req.Hub == "" {
-		return nil, fmt.Errorf("plan deliveries: hub address must not be empty")
+		return fmt.Errorf("plan deliveries: hub address must not be empty")
 	}
 	if req.TruckCount <= 0 {
-		return nil, fmt.Errorf("plan deliveries: truck count must be positive, got %d", req.TruckCount)
+		return fmt.Errorf("plan deliveries: truck count must be positive, got %d", req.TruckCount)
 	}
 	if req.TruckCapacity <= 0 {
-		return nil, fmt.Errorf("plan deliveries: truck capacity must be positive, got %d", req.TruckCapacity)
+		return fmt.Errorf("plan deliveries: truck capacity must be positive, got %d", req.TruckCapacity)
 	}
+	return nil
+}
 
+func loadPackages(
+	ctx context.Context,
+	repo ports.PackageRepository,
+) (pkgDest map[string][]*domain.Package, destinations []string, err error) {
 	pkgs, err := repo.ListPackages(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("plan deliveries: list package: %w", err)
+		return nil, nil, fmt.Errorf("plan deliveries: list package: %w", err)
 	}
 
-	pkgDest := make(map[string][]*domain.Package)
+	pkgDest = make(map[string][]*domain.Package)
 	for _, pkg := range pkgs {
 		d := strings.TrimSpace(pkg.Destination)
 		if d == "" {
-			return nil, fmt.Errorf(
+			return nil, nil, fmt.Errorf(
 				"plan deliveries: package_id=%d has empty destination",
 				pkg.PackageID,
 			)
@@ -57,19 +58,24 @@ func PlanDeliveries(
 		pkgDest[d] = append(pkgDest[d], pkg)
 	}
 
-	destinations := make([]string, 0, len(pkgDest))
+	destinations = make([]string, 0, len(pkgDest))
 	for d := range pkgDest {
 		destinations = append(destinations, d)
 	}
-	if len(destinations) == 0 {
-		return []*domain.RoutePlan{}, nil
-	}
 
-	distances := make(map[string]ports.DistanceResult, len(destinations))
+	return pkgDest, destinations, nil
+}
 
-	// Prefer a single hub->many lookup when supporte to reduce external API calls.
+func fetchHubDistances(
+	ctx context.Context,
+	hub string,
+	destinations []string,
+	provider ports.DistanceProvider,
+) (distances map[string]ports.DistanceResult, err error) {
+	distances = make(map[string]ports.DistanceResult, len(destinations))
+	// Prefer a single hub->many lookup when support to reduce external API calls.
 	if mp, ok := provider.(ports.DistanceMatrixProvider); ok {
-		results, err := mp.GetDistances(ctx, req.Hub, destinations)
+		results, err := mp.GetDistances(ctx, hub, destinations)
 		if err != nil {
 			return nil, fmt.Errorf("plan deliveries: get matrix distances from hub: %w", err)
 		}
@@ -83,12 +89,174 @@ func PlanDeliveries(
 		}
 	} else {
 		for _, d := range destinations {
-			r, err := provider.GetDistance(ctx, req.Hub, d)
+			r, err := provider.GetDistance(ctx, hub, d)
 			if err != nil {
 				return nil, fmt.Errorf("plan deliveries: get distance hub -> %q: %w", d, err)
 			}
 			distances[d] = r
 		}
+	}
+
+	return distances, nil
+}
+
+func fetchDistancesFromOrigin(
+	ctx context.Context,
+	origin string,
+	targets []string,
+	provider ports.DistanceProvider,
+) (distanceResult map[string]ports.DistanceResult, err error) {
+	distanceResult = make(map[string]ports.DistanceResult, len(targets))
+	if mp, ok := provider.(ports.DistanceMatrixProvider); ok {
+		distanceResult, err = mp.GetDistances(ctx, origin, targets)
+		if err != nil {
+			return nil, fmt.Errorf("plan deliveries: get pairwise distances from %q: %w", origin, err)
+		}
+	} else {
+		for _, t := range targets {
+			r, e := provider.GetDistance(ctx, origin, t)
+			if e != nil {
+				return nil, fmt.Errorf("plan deliveries: get pairwise distance from %q to %q: %w", origin, t, e)
+			}
+			distanceResult[t] = r
+		}
+	}
+
+	return distanceResult, nil
+}
+
+func collectPairwiseResults(
+	resultsCh <-chan pairwiseResult,
+	hub string,
+	hubAndDests []string,
+	hubDistances map[string]ports.DistanceResult,
+) (pairwiseDist map[string]ports.DistanceResult, err error) {
+	pairwiseDist = make(map[string]ports.DistanceResult)
+	// Seeds pairwiseDist with already fetched distances (Hub → destination).
+	for _, d := range hubAndDests {
+		if d != hub {
+			pairwiseDist[hub+"|"+d] = hubDistances[d]
+		}
+	}
+
+	for res := range resultsCh {
+		if res.err != nil {
+			if err == nil {
+				err = res.err
+			}
+			continue
+		}
+		for _, t := range hubAndDests {
+			if t != res.origin {
+				r, ok := res.results[t]
+				if !ok {
+					return nil, fmt.Errorf(
+						"plan deliveries: missing pairwise distance from %q to %q",
+						res.origin, t)
+				}
+				pairwiseDist[res.origin+"|"+t] = r
+			}
+		}
+	}
+
+	return pairwiseDist, err
+}
+
+func fetchPairwiseDistances(
+	ctx context.Context,
+	hub string,
+	destinations []string,
+	distances map[string]ports.DistanceResult,
+	provider ports.DistanceProvider,
+) (pairwiseDist map[string]ports.DistanceResult, err error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	sem := make(chan struct{}, 5)
+	resultsCh := make(chan pairwiseResult, len(destinations))
+	var wg sync.WaitGroup
+
+	// Each destination → all other destinations and hub.
+	hubAndDests := append([]string{hub}, destinations...)
+	for _, origin := range destinations {
+		targets := make([]string, 0, len(hubAndDests)-1)
+		for _, t := range hubAndDests {
+			if t != origin {
+				targets = append(targets, t)
+			}
+		}
+
+		wg.Add(1)
+		go func(orig string, tgts []string) {
+			sem <- struct{}{}
+			defer wg.Done()
+			defer func() { <-sem }()
+			distanceResult, err := fetchDistancesFromOrigin(ctx, orig, tgts, provider)
+			if err != nil {
+				resultsCh <- pairwiseResult{origin: orig, err: err}
+				cancel()
+				return
+			}
+			resultsCh <- pairwiseResult{origin: orig, results: distanceResult}
+		}(origin, targets)
+	}
+	wg.Wait()
+	close(resultsCh)
+
+	// Build pairwiseDist: "origin|destination" → DistanceResult for all pairs
+	// needed by the nearest-neighbor route planner.
+	pairwiseDist, err = collectPairwiseResults(resultsCh, hub, hubAndDests, distances)
+	if err != nil {
+		return nil, err
+	}
+
+	return pairwiseDist, nil
+}
+
+func planRoutes(
+	ctx context.Context,
+	req PlanDeliveriesRequest,
+	pairwiseDist map[string]ports.DistanceResult,
+	trucks []*domain.Truck,
+) (plans []*domain.RoutePlan, err error) {
+
+	// Compute and apply a route plan per truck
+	plans = make([]*domain.RoutePlan, 0, len(trucks))
+	for _, truck := range trucks {
+		plan, err := NearestNeighborRoute(ctx, truck, req.DepartAt, pairwiseDist, req.ReturnToStart)
+		if err != nil {
+			return nil, fmt.Errorf("plan deliveries: plan nearest neighbor route: %w", err)
+		}
+		if len(plan.Stops) > 0 {
+			plans = append(plans, plan)
+		}
+	}
+
+	return plans, nil
+}
+
+func PlanDeliveries(
+	ctx context.Context,
+	req PlanDeliveriesRequest,
+	repo ports.PackageRepository,
+	provider ports.DistanceProvider,
+) ([]*domain.RoutePlan, error) {
+	if err := validateRequest(req); err != nil {
+		return nil, err
+	}
+
+	pkgDest, destinations, err := loadPackages(ctx, repo)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(destinations) == 0 {
+		return []*domain.RoutePlan{}, nil
+	}
+
+	distances, err := fetchHubDistances(ctx, req.Hub, destinations, provider)
+	if err != nil {
+		return nil, err
 	}
 
 	trucks := make([]*domain.Truck, 0, req.TruckCount)
@@ -101,111 +269,10 @@ func PlanDeliveries(
 		return nil, fmt.Errorf("plan deliveries: assign packages: %w", err)
 	}
 
-	// Build pairwiseDist: "origin|destination" → DistanceResult for all pairs
-	// needed by the nearest-neighbor route planner.
-	pairwiseDist := make(map[string]ports.DistanceResult)
-
-	// Hub → each destination (already fetched above).
-	for _, d := range destinations {
-		pairwiseDist[req.Hub+"|"+d] = distances[d]
+	pairwiseDist, err := fetchPairwiseDistances(ctx, req.Hub, destinations, distances, provider)
+	if err != nil {
+		return nil, err
 	}
 
-	// Each destination → all other destinations and hub.
-	hubAndDests := append([]string{req.Hub}, destinations...)
-	mp, hasMatrix := provider.(ports.DistanceMatrixProvider)
-
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	sem := make(chan struct{}, 5)
-	resultsCh := make(chan pairwiseResult, len(destinations))
-	var wg sync.WaitGroup
-
-	for _, origin := range destinations {
-		targets := make([]string, 0, len(hubAndDests)-1)
-		for _, t := range hubAndDests {
-			if t != origin {
-				targets = append(targets, t)
-			}
-		}
-
-		wg.Add(1)
-		go func(orig string) {
-			sem <- struct{}{}
-			defer wg.Done()
-			defer func() { <-sem }()
-
-			var res map[string]ports.DistanceResult
-			if hasMatrix {
-				var e error
-				res, e = mp.GetDistances(ctx, orig, targets)
-				if e != nil {
-					resultsCh <- pairwiseResult{origin: orig, err: fmt.Errorf(
-						"plan deliveries: get pairwise distances from %q: %w",
-						orig, e,
-					)}
-					cancel()
-					return
-				}
-			} else {
-				res = make(map[string]ports.DistanceResult, len(targets))
-				for _, t := range targets {
-					r, e := provider.GetDistance(ctx, orig, t)
-					if e != nil {
-						resultsCh <- pairwiseResult{origin: orig, err: fmt.Errorf(
-							"plan deliveries: get pairwise distance from %q to %q: %w",
-							orig, t, e,
-						)}
-						cancel()
-						return
-					}
-					res[t] = r
-				}
-			}
-
-			resultsCh <- pairwiseResult{origin: orig, results: res}
-		}(origin)
-	}
-
-	wg.Wait()
-	close(resultsCh)
-
-	var pairwiseErr error
-	for res := range resultsCh {
-		if res.err != nil {
-			if pairwiseErr == nil {
-				pairwiseErr = res.err
-			}
-			continue
-		}
-		for _, t := range hubAndDests {
-			if t != res.origin {
-				r, ok := res.results[t]
-				if !ok {
-					return nil, fmt.Errorf(
-						"plan deliveries: missing pairwise distance from %q to %q",
-						res.origin, t,
-					)
-				}
-				pairwiseDist[res.origin+"|"+t] = r
-			}
-		}
-	}
-	if pairwiseErr != nil {
-		return nil, pairwiseErr
-	}
-
-	// Compute and apply a route plan per truck
-	plans := make([]*domain.RoutePlan, 0, len(trucks))
-	for _, truck := range trucks {
-		plan, err := NearestNeighborRoute(ctx, truck, req.DepartAt, pairwiseDist, req.ReturnToStart)
-		if err != nil {
-			return nil, fmt.Errorf("plan deliveries: plan nearest neighbor route: %w", err)
-		}
-		if len(plan.Stops) > 0 {
-			plans = append(plans, plan)
-		}
-	}
-
-	return plans, nil
+	return planRoutes(ctx, req, pairwiseDist, trucks)
 }
