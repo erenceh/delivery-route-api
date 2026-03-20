@@ -24,6 +24,7 @@ type PlanDeliveriesRequest struct {
 	ReturnToStart bool
 }
 
+// validateRequest checks that required fields in PlanDeliveriesRequest are valid.
 func validateRequest(req PlanDeliveriesRequest) error {
 	if req.Hub == "" {
 		return fmt.Errorf("plan deliveries: hub address must not be empty")
@@ -37,6 +38,8 @@ func validateRequest(req PlanDeliveriesRequest) error {
 	return nil
 }
 
+// loadPackages fetches all packages from the repository and groups them by destinations.
+// Returns an empty map and nil error if no packages exit.
 func loadPackages(
 	ctx context.Context,
 	repo ports.PackageRepository,
@@ -66,6 +69,8 @@ func loadPackages(
 	return pkgDest, destinations, nil
 }
 
+// fetchHubDistances retrives travel distances from the hub to all destinations.
+// Uses batched lookup when the provider supports it.
 func fetchHubDistances(
 	ctx context.Context,
 	hub string,
@@ -100,6 +105,8 @@ func fetchHubDistances(
 	return distances, nil
 }
 
+// fetchDistancesFromOrigin fetches distances from a single origin to all targets.
+// Uses batched lookup when the provider supports it, falls back to sequential calls.
 func fetchDistancesFromOrigin(
 	ctx context.Context,
 	origin string,
@@ -125,6 +132,8 @@ func fetchDistancesFromOrigin(
 	return distanceResult, nil
 }
 
+// collectPairwiseResults collects goroutine results from resultsCh and assembles
+// the pairwise distance map. Seeds hub→destination distances before collecting.
 func collectPairwiseResults(
 	resultsCh <-chan pairwiseResult,
 	hub string,
@@ -162,6 +171,9 @@ func collectPairwiseResults(
 	return pairwiseDist, err
 }
 
+// fetchPairwiseDistances fetches distances between all destination pairs concurrently.
+// Uses a bounded goroutine pool (semaphore size 5) to limit concurrent ORS calls.
+// Hub→destination distances are seeded from the already-fetched distances map.
 func fetchPairwiseDistances(
 	ctx context.Context,
 	hub string,
@@ -213,6 +225,8 @@ func fetchPairwiseDistances(
 	return pairwiseDist, nil
 }
 
+// planRoutes computes a route plan per truck.
+// Only trucks with assigned packages are included in the returned plans.
 func planRoutes(
 	ctx context.Context,
 	req PlanDeliveriesRequest,
@@ -235,6 +249,10 @@ func planRoutes(
 	return plans, nil
 }
 
+// PlanDeliveries orchestrates the full route planning workflow.
+// It loads packages, fetches distances, assigns packages to trucks,
+// and computes a nearest-neighbor route plan for each truck.
+// Only trucks with assigned packages are included in the returned plans.
 func PlanDeliveries(
 	ctx context.Context,
 	req PlanDeliveriesRequest,
