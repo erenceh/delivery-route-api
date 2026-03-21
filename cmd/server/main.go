@@ -15,6 +15,7 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/joho/godotenv"
+	"github.com/redis/go-redis/v9"
 )
 
 // main is the application composition root.
@@ -23,29 +24,37 @@ func main() {
 	if err := godotenv.Load(); err != nil {
 		log.Println("No .env file found (using environment variables)")
 	}
+	hub := config.Get("HUB_ADDRESS", "1901 W Madison St, Phoenix, AZ 85009")
+	port := config.Get("PORT", "8080")
+	orsKey := os.Getenv("ORS_API_KEY")
 
 	databaseURL := os.Getenv("DATABASE_URL")
 	if strings.TrimSpace(databaseURL) == "" {
 		log.Fatal("DATABASE_URL is required")
 	}
-
 	db, err := db.Open(databaseURL)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer db.Close()
 
-	hub := config.Get("HUB_ADDRESS", "1901 W Madison St, Phoenix, AZ 85009")
-	port := config.Get("PORT", "8080")
+	redisURL := os.Getenv("REDIS_URL")
+	if strings.TrimSpace(redisURL) == "" {
+		log.Fatal("REDIS_URL is required")
+	}
+	opt, err := redis.ParseURL(redisURL)
+	if err != nil {
+		log.Fatal("invalid REDIS_URL: ", err)
+	}
+	rdb := redis.NewClient(opt)
 
-	orsKey := os.Getenv("ORS_API_KEY")
 	if strings.TrimSpace(orsKey) == "" {
 		log.Fatal("ORS_API_KEY is required")
 	}
 
 	// ORS provider uses persistent DB caches to avoid repeated geocode/matrix calls.
-	distanceCache := cache.NewSQLDistanceCache(db)
-	geocodeCache := cache.NewSQLGeocodeCache(db)
+	distanceCache := cache.NewRedisDistanceCache(rdb)
+	geocodeCache := cache.NewRedisGeocodeCache(rdb)
 	provider, err := distance.NewORSDistanceProvider(orsKey, distanceCache, geocodeCache)
 	if err != nil {
 		log.Fatal(err)
@@ -53,7 +62,6 @@ func main() {
 
 	repo := repositories.NewSQLPackageRepository(db)
 	router := api.NewRouter(repo, provider, hub)
-
 	// Timeouts are tuned for cold-cache route planning (external API latency).
 	log.Printf("Server listening addr=:%s", port)
 	srv := &http.Server{
