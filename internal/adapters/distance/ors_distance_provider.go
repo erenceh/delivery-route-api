@@ -2,7 +2,6 @@ package distance
 
 import (
 	"context"
-	"delivery-route-service/internal/adapters/cache"
 	"delivery-route-service/internal/domain"
 	"delivery-route-service/internal/platform/obs"
 	"delivery-route-service/internal/ports"
@@ -28,14 +27,14 @@ type ORSDistanceProvider struct {
 	apiKey        string
 	baseURL       string
 	profile       string
-	distanceCache *cache.SQLDistanceCache
-	geocodeCache  *cache.SQLGeocodeCache
+	distanceCache ports.DistanceCache
+	geocodeCache  ports.GeocodeCache
 }
 
 func NewORSDistanceProvider(
 	apiKey string,
-	distanceCache *cache.SQLDistanceCache,
-	geocodeCache *cache.SQLGeocodeCache,
+	distanceCache ports.DistanceCache,
+	geocodeCache ports.GeocodeCache,
 ) (*ORSDistanceProvider, error) {
 	if apiKey == "" {
 		return nil, errors.New("ORS api key is empty")
