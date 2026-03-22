@@ -10,8 +10,9 @@ The service demonstrates:
 
 - Layered backend architecture (domain, ports, adapters)
 - Integration with an external routing API (OpenRouteService)
-- Postgres persistence
-- Cold vs warm cache optimization
+- Postgres persistence (packages)
+- Redis caching (geocode and distance results)
+- Cold vs warm cache optimization using goroutines
 - Context-aware request handling
 - Retry/backoff for resilient API communication
 - HTTP server observability (latency + response metrics)
@@ -27,6 +28,7 @@ Note: This service depends on OpenRouteService. If ORS is temporarily unavailabl
 - OpenRouteService integration (geocoding + matrix API)
 - Postgres-backed:
   - Package storage
+- Redis-backed:
   - Distance cache
   - Geocode cache
 - Concurrent pairwise distance fetching with bounded goroutine pool
@@ -40,11 +42,13 @@ This is a **single-process HTTP service** using layered architecture.
 
 ```
 cmd/server          -> application entrypoint
+cmd/dbtool          -> schema init and package seeding
 internal/api        -> HTTP handlers + DTOs + middleware
 internal/services   -> routing & assignment logic
 internal/domain     -> core business entities
-internal/ports      -> interfaces (DistanceProvider, Repository)
+internal/ports      -> interface contracts (DistanceProvider, Repository, Cache)
 internal/adapters   -> Postgres + ORS implementations
+internal/testutil   -> shared mock implementations for testing
 ```
 
 The domain layer is independent of infrastructure concerns.
@@ -68,7 +72,7 @@ This approach is intentionally simple and deterministic. Full logistics optimiza
 
 ## Performance & Caching
 
-The system maintains persistent Postgres caches for:
+The system maintains Redis caches for:
 
 - Geocode results (address -> coordinates)
 - Distance matrix results (origin -> destination)
@@ -77,14 +81,14 @@ The system maintains persistent Postgres caches for:
 
 - Requires ORS geocode + matrix API calls
 - Typical latency (20 destinations): ~8 seconds
-- Geocoding and pairwise distance fetching are parallelized using bounded goroutine pools (semaphore size: 5) to balance throughput agains ORS rate limits
+- Geocoding and pairwise distance fetching are parallelized using bounded goroutine pools (semaphore size: 5) to balance throughput against ORS rate limits
 
-Pairwise distances are pre-fetched concurrently before route planning, reducing cold-start latency from ~20s to ~8s
+Pairwise distances are pre-fetched concurrently before route planning, reducing cold-start latency from ~20 seconds to ~8 seconds
 
 ### Warm Run
 
-- All distances served from Postgres cache
-- Typical latency: ~2-5 milliseconds
+- All distances served from Redis cache
+- Typical latency: ~8 milliseconds
 
 This demonstrates the impact of persistent caching on reducing repeated external API latency.
 
@@ -94,9 +98,17 @@ This demonstrates the impact of persistent caching on reducing repeated external
 
 GET `/health`
 
+```
+curl http://localhost:8080/health
+```
+
 ### List Packages
 
 GET `/packages`
+
+```
+curl http://localhost:8080/packages
+```
 
 ### Plan Routes
 
@@ -114,18 +126,25 @@ Request body (optional):
 }
 ```
 
+```
+curl -X POST http://localhost:8080/plans \
+    -H "Content-Type: application/json" \
+    -d '{}'
+```
+
 ## Running Locally
 
 ### Requirements
 
-- Go 1.22+
+- Go 1.25+
 - OpenRouteService API key
 
-### Environment Variables
+### Environment Variables (.env)
 
 ```
 ORS_API_KEY=YOUR_KEY_HERE
 DATABASE_URL=postgres://delivery:delivery@localhost:5432/delivery?sslmode=disable
+REDIS_URL=redis://localhost:6379
 SEED_PATH=data/seeds/packages.json
 PORT=8080
 HUB_ADDRESS=1901 W Madison St, Phoenix, AZ 85009
@@ -141,12 +160,53 @@ go run ./cmd/dbtool
 go run ./cmd/server
 ```
 
-Then:
+Then in a different terminal:
 
 ```
 curl -X POST http://localhost:8080/plans \
     -H "Content-Type: application/json" \
     -d '{}'
+```
+
+To clear cache:
+
+```
+docker compose down -v
+```
+
+## Run on Docker
+
+### Environment Variables (.env.docker)
+
+```
+ORS_API_KEY=YOUR_KEY_HERE
+DATABASE_URL=postgres://delivery:delivery@db:5432/delivery?sslmode=disable
+REDIS_URL=redis://redis:6379
+SEED_PATH=data/seeds/packages.json
+PORT=8080
+HUB_ADDRESS=1901 W Madison St, Phoenix, AZ 85009
+```
+
+### Run
+
+Postgres runs in Docker via docker-compose.
+
+```
+docker compose up --build
+```
+
+Then in a different terminal:
+
+```
+curl -X POST http://localhost:8080/plans \
+    -H "Content-Type: application/json" \
+    -d '{}'
+```
+
+To clear cache:
+
+```
+docker compose down -v
 ```
 
 ## Observability
@@ -159,7 +219,7 @@ The server includes request logging middleware:
 - Bytes written
 - Request duration (ms)
 
-`method=POST path=/plans status=200 bytes=2889 dur=24344ms`
+`method=POST path=/plans status=200 bytes=2774 dur=9423ms`
 
 ## Future Improvements
 
