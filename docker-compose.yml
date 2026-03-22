@@ -1,6 +1,6 @@
 services:
   db:
-    image: postgres:16
+    image: postgres:16-alpine
     environment:
       POSTGRES_USER: delivery
       POSTGRES_PASSWORD: delivery
@@ -11,7 +11,7 @@ services:
       - pgdata:/var/lib/postgresql/data
 
   redis:
-    image: redis:7
+    image: redis:7-alpine
     ports: 
       - "6379:6379"
     volumes:
