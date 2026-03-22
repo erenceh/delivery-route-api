@@ -1,16 +1,20 @@
-server:
-  build: .
-  ports:
-    - "8080:8080"
-  depends_on:
-    - db
-    - redis
-  env_file:
-    - .env
-
 services:
+  server:
+    build: .
+    ports:
+      - "8080:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      dbtool:
+        condition: service_completed_successfully
+    env_file:
+      - .env
+
   db:
-    image: postgres:16
+    image: postgres:16-alpine
     environment:
       POSTGRES_USER: delivery
       POSTGRES_PASSWORD: delivery
@@ -19,13 +23,36 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U delivery"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
 
   redis:
-    image: redis:7
+    image: redis:7-alpine
     ports: 
       - "6379:6379"
     volumes:
       - redisdata:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  dbtool:
+    build:
+      context: .
+      dockerfile: Dockerfile.dbtool
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env
+    restart: "no"
 
 volumes:
   pgdata:
