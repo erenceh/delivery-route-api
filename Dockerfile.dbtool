@@ -8,4 +8,5 @@ RUN go build -o dbtool ./cmd/dbtool
 FROM alpine:latest
 WORKDIR /app
 COPY --from=builder /app/dbtool .
+COPY data/ ./data/
 CMD ["./dbtool"]
