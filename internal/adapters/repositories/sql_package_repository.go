@@ -18,7 +18,7 @@ func NewSQLPackageRepository(db *sql.DB) *SQLPackageRepository {
 // Return all packages stored in the database.
 func (s *SQLPackageRepository) ListPackages(ctx context.Context) ([]*domain.Package, error) {
 	if s.DB == nil {
-		return nil, errors.New("sqlite package repository: DB is nil")
+		return nil, errors.New("postgres package repository: DB is nil")
 	}
 
 	query := `
